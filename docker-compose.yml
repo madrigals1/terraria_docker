@@ -8,3 +8,5 @@ services:
       - "${PORT}:7777"
     volumes:
       - "./worlds:/root/.local/share/Terraria/Worlds"
+    tty: true
+    stdin_open: true
