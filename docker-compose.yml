@@ -1,0 +1,10 @@
+services:
+  terraria:
+    container_name: terraria
+    image: ryshe/terraria:latest
+    env_file:
+      - .env
+    ports:
+      - "${PORT}:7777"
+    volumes:
+      - "./worlds:/root/.local/share/Terraria/Worlds"
