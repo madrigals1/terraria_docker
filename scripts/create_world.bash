@@ -87,9 +87,23 @@ prompt_choice() {
     echo "$selected"
 }
 
+lookup() {
+    local key="$1"
+    shift
+    local options=("$@")
+    for opt in "${options[@]}"; do
+        if [[ "${opt%%:*}" == "$key" ]]; then
+            echo "${opt#*:}"
+            return
+        fi
+    done
+    echo "$key"
+}
+
 prompt_value() {
     local prompt="$1"
     local default="${2:-}"
+    local allow_empty="${3:-false}"
     local value=""
 
     while true; do
@@ -101,7 +115,7 @@ prompt_value() {
 
         value="${value:-$default}"
 
-        if [[ -n "$value" ]]; then
+        if [[ -n "$value" ]] || [[ "$allow_empty" == "true" ]]; then
             echo "$value"
             return
         fi
@@ -167,50 +181,94 @@ echo ""
 
 WORLD_NAME="$(prompt_value "World name (filename without .wld)")"
 
+if [[ -f "$WORLDS_DIR/${WORLD_NAME}.wld" ]]; then
+    echo "" >&2
+    echo "World '${WORLD_NAME}.wld' already exists." >&2
+    echo "" >&2
+    echo "  1) Overwrite existing world" >&2
+    echo "  2) Create as ${WORLD_NAME}_1.wld" >&2
+    echo "  3) Enter a different name" >&2
+    echo "  4) Cancel" >&2
+    echo "" >&2
+    while true; do
+        read -rp "Choose [1-4]: " conflict_choice
+        case "$conflict_choice" in
+            1)
+                echo "Overwriting existing world." >&2
+                break
+                ;;
+            2)
+                WORLD_NAME="${WORLD_NAME}_1"
+                echo "World will be created as ${WORLD_NAME}.wld" >&2
+                break
+                ;;
+            3)
+                WORLD_NAME="$(prompt_value "Enter new world name (without .wld)")"
+                if [[ -f "$WORLDS_DIR/${WORLD_NAME}.wld" ]]; then
+                    echo "That name also exists. Try again." >&2
+                    continue
+                fi
+                break
+                ;;
+            4)
+                echo "Aborted."
+                exit 0
+                ;;
+            *)
+                echo "Invalid choice." >&2
+                ;;
+        esac
+    done
+fi
+
 SIZE_CHOICE="$(prompt_choice "Select world size:" "${WORLD_SIZES[@]}")"
 
 DIFFICULTY_CHOICE="$(prompt_choice "Select difficulty:" "${DIFFICULTIES[@]}")"
 
 EVIL_CHOICE="$(prompt_choice "Select evil type:" "${EVIL_TYPES[@]}")"
 
-echo "" >&2
-echo "=========================================" >&2
-echo "  Special Seeds" >&2
-echo "  (major world generation changes)" >&2
-echo "=========================================" >&2
+SEED=""
+read -rp "Do you want to add seeds? [y/N]: " add_seeds
+if [[ "${add_seeds,,}" == "y" ]]; then
+    echo "" >&2
+    echo "=========================================" >&2
+    echo "  Special Seeds" >&2
+    echo "  (major world generation changes)" >&2
+    echo "=========================================" >&2
 
-SPECIAL_SELECTED="$(prompt_multi_select "Toggle special seeds ON:" "${SPECIAL_SEEDS[@]}")"
+    SPECIAL_SELECTED="$(prompt_multi_select "Toggle special seeds ON:" "${SPECIAL_SEEDS[@]}")"
 
-echo "" >&2
-echo "=========================================" >&2
-echo "  Secret Seeds" >&2
-echo "  (modifiers, can be combined)" >&2
-echo "=========================================" >&2
+    echo "" >&2
+    echo "=========================================" >&2
+    echo "  Secret Seeds" >&2
+    echo "  (modifiers, can be combined)" >&2
+    echo "=========================================" >&2
 
-SECRET_SELECTED="$(prompt_multi_select "Toggle secret seeds ON:" "${SECRET_SEEDS[@]}")"
+    SECRET_SELECTED="$(prompt_multi_select "Toggle secret seeds ON:" "${SECRET_SEEDS[@]}")"
 
-CUSTOM_SEED="$(prompt_value "Additional custom seed (numeric, leave empty to skip)" "")"
+    CUSTOM_SEED="$(prompt_value "Additional custom seed (numeric, leave empty to skip)" "" "true")"
 
-SEED_PARTS=()
-if [[ -n "$SPECIAL_SELECTED" ]]; then
-    SEED_PARTS+=("$SPECIAL_SELECTED")
+    SEED_PARTS=()
+    if [[ -n "$SPECIAL_SELECTED" ]]; then
+        SEED_PARTS+=("$SPECIAL_SELECTED")
+    fi
+    if [[ -n "$SECRET_SELECTED" ]]; then
+        SEED_PARTS+=("$SECRET_SELECTED")
+    fi
+    if [[ -n "$CUSTOM_SEED" ]]; then
+        SEED_PARTS+=("$CUSTOM_SEED")
+    fi
+    SEED="${SEED_PARTS[*]}"
 fi
-if [[ -n "$SECRET_SELECTED" ]]; then
-    SEED_PARTS+=("$SECRET_SELECTED")
-fi
-if [[ -n "$CUSTOM_SEED" ]]; then
-    SEED_PARTS+=("$CUSTOM_SEED")
-fi
-SEED="${SEED_PARTS[*]}"
 
 echo ""
 echo "========================================="
 echo "  Summary"
 echo "========================================="
 echo "  World name:  $WORLD_NAME"
-echo "  Size:        $SIZE_CHOICE"
-echo "  Difficulty:  $DIFFICULTY_CHOICE"
-echo "  Evil:        $EVIL_CHOICE"
+echo "  Size:        $SIZE_CHOICE ($(lookup "$SIZE_CHOICE" "${WORLD_SIZES[@]}"))"
+echo "  Difficulty:  $DIFFICULTY_CHOICE ($(lookup "$DIFFICULTY_CHOICE" "${DIFFICULTIES[@]}"))"
+echo "  Evil:        $EVIL_CHOICE ($(lookup "$EVIL_CHOICE" "${EVIL_TYPES[@]}"))"
 echo "  Seeds:       ${SEED:-none}"
 echo "========================================="
 echo ""
@@ -240,32 +298,26 @@ if [[ -n "$SEED" ]]; then
 fi
 
 echo "Creating world..."
-sudo "${DOCKER_CMD[@]}"
+"${DOCKER_CMD[@]}"
 
 echo "Waiting for world generation to complete..."
 while ! [[ -f "$WORLDS_DIR/${WORLD_NAME}.wld" ]]; do
-    if ! sudo docker inspect terraria-create >/dev/null 2>&1; then
+    if ! docker inspect terraria-create >/dev/null 2>&1; then
         echo "Error: Container exited before world file was created."
         exit 1
     fi
     sleep 2
 done
 
-echo "Stopping server..."
-sudo docker stop terraria-create >/dev/null 2>&1
-sudo docker wait terraria-create >/dev/null 2>&1
+docker stop terraria-create >/dev/null 2>&1
+docker wait terraria-create >/dev/null 2>&1
 
 if [[ -f "$WORLDS_DIR/${WORLD_NAME}.wld" ]]; then
     echo ""
     echo "World '${WORLD_NAME}.wld' created successfully."
-
-    sed -i "s/^WORLD_FILENAME=.*/WORLD_FILENAME=${WORLD_NAME}.wld/" "$ENV_FILE"
-
-    if ! grep -q "^WORLD_FILENAME=" "$ENV_FILE"; then
-        echo "WORLD_FILENAME=${WORLD_NAME}.wld" >> "$ENV_FILE"
-    fi
-
-    echo ".env updated with WORLD_FILENAME=${WORLD_NAME}.wld"
+    echo ""
+    echo "Update .env with: WORLD_FILENAME=${WORLD_NAME}.wld"
+    echo "Then start the server with: docker compose up -d"
 else
     echo "Error: World file was not created."
     exit 1
